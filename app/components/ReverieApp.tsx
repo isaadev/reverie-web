@@ -125,21 +125,37 @@ export default function ReverieApp() {
   const isProcessing = status === 'processing';
   const isDone       = status === 'done'; // eslint-disable-line @typescript-eslint/no-unused-vars
 
+  const idle = status === 'idle' || status === 'loading-info';
+
   return (
-    <div style={styles.page}>
-      <div style={styles.card}>
+    <div style={{ ...styles.page, ...(idle ? styles.pageIdle : {}) }}>
+      <div style={{ ...styles.card, ...(idle ? styles.cardIdle : {}) }}>
 
         {/* ── Header ── */}
-        <div style={styles.header}>
-          <span style={styles.wave}>〰️</span>
-          <span style={styles.logo}>reverie</span>
+        <div style={{ ...styles.header, ...(idle ? styles.headerIdle : {}) }}>
+          <span style={{ ...styles.wave, ...(idle ? styles.waveIdle : {}) }}>〰️</span>
+          <span style={{ ...styles.logo, ...(idle ? styles.logoIdle : {}) }}>reverie</span>
         </div>
-        <p style={styles.tagline}>slowed · reverb · pitch · download</p>
+        <p style={{ ...styles.tagline, ...(idle ? styles.taglineIdle : {}) }}>
+          slowed · reverb · pitch · download
+        </p>
+
+        {/* ── Extension badge ── */}
+        {idle && (
+          <a
+            href="https://addons.mozilla.org/en-US/firefox/addon/reverie/"
+            target="_blank"
+            rel="noreferrer"
+            style={styles.extBadge}
+          >
+            🦊 also available as a firefox extension →
+          </a>
+        )}
 
         {/* ── URL Input ── */}
-        <div style={styles.inputRow}>
+        <div style={{ ...styles.inputRow, ...(idle ? styles.inputRowIdle : {}) }}>
           <input
-            style={styles.input}
+            style={{ ...styles.input, ...(idle ? styles.inputIdle : {}) }}
             type="text"
             placeholder="paste a youtube or soundcloud link..."
             value={url}
@@ -147,7 +163,7 @@ export default function ReverieApp() {
             onKeyDown={e => e.key === 'Enter' && loadInfo(url)}
           />
           <button
-            style={{ ...styles.loadBtn, opacity: status === 'loading-info' ? 0.5 : 1 }}
+            style={{ ...styles.loadBtn, ...(idle ? styles.loadBtnIdle : {}), opacity: status === 'loading-info' ? 0.5 : 1 }}
             onClick={() => loadInfo(url)}
             disabled={status === 'loading-info'}
           >
@@ -287,6 +303,10 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '48px 16px 64px',
     background: 'var(--bg)',
   },
+  pageIdle: {
+    alignItems: 'center',
+    padding: '0 16px',
+  },
   card: {
     width: '100%',
     maxWidth: 420,
@@ -294,13 +314,24 @@ const styles: Record<string, React.CSSProperties> = {
     flexDirection: 'column',
     gap: 20,
   },
+  cardIdle: {
+    alignItems: 'center',
+    gap: 24,
+    paddingBottom: 80,
+  },
   header: {
     display: 'flex',
     alignItems: 'center',
     gap: 10,
   },
+  headerIdle: {
+    gap: 14,
+  },
   wave: {
     fontSize: 28,
+  },
+  waveIdle: {
+    fontSize: 52,
   },
   logo: {
     fontSize: 28,
@@ -308,11 +339,44 @@ const styles: Record<string, React.CSSProperties> = {
     letterSpacing: 6,
     color: '#fff',
   },
+  logoIdle: {
+    fontSize: 52,
+    letterSpacing: 10,
+  },
   tagline: {
     fontSize: 11,
     color: 'var(--faint)',
     letterSpacing: 2,
     marginTop: -12,
+  },
+  taglineIdle: {
+    fontSize: 13,
+    marginTop: -16,
+    letterSpacing: 3,
+  },
+  extBadge: {
+    display: 'inline-block',
+    fontSize: 11,
+    color: 'var(--muted)',
+    background: 'var(--surface)',
+    border: '1px solid var(--border)',
+    borderRadius: 999,
+    padding: '5px 14px',
+    textDecoration: 'none',
+    letterSpacing: 0.5,
+    transition: 'border-color 0.15s, color 0.15s',
+  },
+  inputRowIdle: {
+    width: '100%',
+    marginTop: 8,
+  },
+  inputIdle: {
+    fontSize: 13,
+    padding: '13px 16px',
+  },
+  loadBtnIdle: {
+    fontSize: 13,
+    padding: '0 20px',
   },
   inputRow: {
     display: 'flex',
