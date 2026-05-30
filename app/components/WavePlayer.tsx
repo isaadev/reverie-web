@@ -3,193 +3,213 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 
 interface Props {
-  src: string;        // blob URL or audio URL
-  filename: string;
+  src:        string;
+  filename:   string;
   onDownload: () => void;
 }
 
-const BAR_COUNT  = 40;
-const BAR_GAP    = 2;
-const PURPLE     = '#8b5cf6';
-const PURPLE_DIM = '#2e1f5e';
+const BAR_COUNT = 48;
+const BAR_GAP   = 2.5;
+const LERP      = 0.18; // smoothing factor (0 = instant, 1 = never moves)
 
-export default function WavePlayer({ src, filename, onDownload }: Props) {
+const IDLE_HEIGHTS = Array.from({ length: BAR_COUNT }, (_, i) =>
+  0.15 + 0.35 * Math.abs(Math.sin(i * 0.42 + 1.1)) * Math.abs(Math.cos(i * 0.17))
+);
+
+export default function WavePlayer({ src, filename: _filename, onDownload }: Props) {
   const audioRef    = useRef<HTMLAudioElement>(null);
   const canvasRef   = useRef<HTMLCanvasElement>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const rafRef      = useRef<number>(0);
   const ctxRef      = useRef<AudioContext | null>(null);
   const sourceRef   = useRef<MediaElementAudioSourceNode | null>(null);
+  const playingRef  = useRef(false);
+  const smoothed    = useRef<Float32Array>(new Float32Array(BAR_COUNT).fill(0));
 
   const [playing,  setPlaying]  = useState(false);
-  const [progress, setProgress] = useState(0);   // 0–1
+  const [progress, setProgress] = useState(0);
   const [current,  setCurrent]  = useState(0);
   const [duration, setDuration] = useState(0);
 
-  // ── Wire Web Audio on first play ─────────────────────────────────────────────
+  // ── Match canvas pixel size to its CSS size ───────────────────────────────
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const sync = () => {
+      const dpr    = window.devicePixelRatio || 1;
+      canvas.width  = canvas.offsetWidth  * dpr;
+      canvas.height = canvas.offsetHeight * dpr;
+    };
+    sync();
+    const ro = new ResizeObserver(sync);
+    ro.observe(canvas);
+    return () => ro.disconnect();
+  }, []);
+
+  // ── Wire Web Audio on first play ──────────────────────────────────────────
   const ensureAudioGraph = useCallback(() => {
     const audio = audioRef.current;
     if (!audio || sourceRef.current) return;
-
     const actx     = new AudioContext();
     const source   = actx.createMediaElementSource(audio);
     const analyser = actx.createAnalyser();
-    analyser.fftSize = 128;
+    analyser.fftSize        = 128;
+    analyser.smoothingTimeConstant = 0.75;
     source.connect(analyser);
     analyser.connect(actx.destination);
-
-    ctxRef.current    = actx;
-    sourceRef.current = source;
+    ctxRef.current      = actx;
+    sourceRef.current   = source;
     analyserRef.current = analyser;
   }, []);
 
-  // ── Canvas draw loop ─────────────────────────────────────────────────────────
+  // ── Draw loop (never recreated — uses refs only) ──────────────────────────
   const draw = useCallback(() => {
     const canvas   = canvasRef.current;
-    const analyser = analyserRef.current;
-    if (!canvas) return;
-
+    if (!canvas) { rafRef.current = requestAnimationFrame(draw); return; }
     const ctx = canvas.getContext('2d');
-    if (!ctx) return;
+    if (!ctx)  { rafRef.current = requestAnimationFrame(draw); return; }
 
-    const W = canvas.width;
-    const H = canvas.height;
+    const W   = canvas.width;
+    const H   = canvas.height;
+    const dpr = window.devicePixelRatio || 1;
     ctx.clearRect(0, 0, W, H);
 
-    if (analyser) {
-      const data = new Uint8Array(analyser.frequencyBinCount);
-      analyser.getByteFrequencyData(data);
+    const barW    = (W - BAR_GAP * dpr * (BAR_COUNT - 1)) / BAR_COUNT;
+    const isLive  = playingRef.current && analyserRef.current;
 
-      const barW = (W - BAR_GAP * (BAR_COUNT - 1)) / BAR_COUNT;
-      for (let i = 0; i < BAR_COUNT; i++) {
-        // Map bar index to frequency bin
-        const binIdx = Math.floor((i / BAR_COUNT) * data.length);
-        const v      = data[binIdx] / 255;
-        const barH   = Math.max(3, v * H);
-        const x      = i * (barW + BAR_GAP);
-        const y      = (H - barH) / 2;
-
-        const alpha = 0.4 + v * 0.6;
-        ctx.fillStyle = playing
-          ? `rgba(139, 92, 246, ${alpha})`
-          : PURPLE_DIM;
-        ctx.beginPath();
-        ctx.roundRect(x, y, barW, barH, barW / 2);
-        ctx.fill();
-      }
+    let targets: number[];
+    if (isLive && analyserRef.current) {
+      const raw = new Uint8Array(analyserRef.current.frequencyBinCount);
+      analyserRef.current.getByteFrequencyData(raw);
+      targets = Array.from({ length: BAR_COUNT }, (_, i) => {
+        const bin = Math.floor((i / BAR_COUNT) * raw.length);
+        return raw[bin] / 255;
+      });
     } else {
-      // Static idle bars
-      const barW = (W - BAR_GAP * (BAR_COUNT - 1)) / BAR_COUNT;
-      const idle = [0.3,0.5,0.4,0.7,0.55,0.45,0.65,0.35,0.6,0.5,
-                    0.4,0.7,0.3,0.55,0.45,0.65,0.5,0.4,0.35,0.6,
-                    0.5,0.45,0.65,0.35,0.55,0.7,0.4,0.3,0.6,0.5,
-                    0.45,0.65,0.35,0.55,0.5,0.4,0.7,0.3,0.6,0.45];
-      for (let i = 0; i < BAR_COUNT; i++) {
-        const barH = Math.max(3, (idle[i] ?? 0.4) * H * 0.6);
-        const x    = i * (barW + BAR_GAP);
-        const y    = (H - barH) / 2;
-        ctx.fillStyle = PURPLE_DIM;
-        ctx.beginPath();
-        ctx.roundRect(x, y, barW, barH, barW / 2);
+      // Breathing idle animation
+      const t = Date.now() / 1200;
+      targets = IDLE_HEIGHTS.map((h, i) => h * (0.6 + 0.4 * Math.sin(t + i * 0.3)));
+    }
+
+    // Lerp smoothed values toward targets
+    for (let i = 0; i < BAR_COUNT; i++) {
+      smoothed.current[i] += (targets[i] - smoothed.current[i]) * LERP;
+    }
+
+    for (let i = 0; i < BAR_COUNT; i++) {
+      const v    = smoothed.current[i];
+      const barH = Math.max(2 * dpr, v * H * 0.92);
+      const x    = i * (barW + BAR_GAP * dpr);
+      const y    = (H - barH) / 2;
+      const r    = Math.min(barW / 2, 3 * dpr);
+
+      // Gradient: dim purple → bright purple based on amplitude
+      const alpha = isLive ? 0.25 + v * 0.75 : 0.18 + v * 0.3;
+      const light = isLive ? Math.floor(92 + v * 80)  : 92;
+      ctx.fillStyle = `rgba(${isLive ? `${80 + Math.floor(v*60)}, ${40 + Math.floor(v*30)}, ${light}` : '60, 31, 94'}, ${alpha})`;
+
+      ctx.beginPath();
+      ctx.roundRect(x, y, barW, barH, r);
+      ctx.fill();
+
+      // Glow on loud bars when playing
+      if (isLive && v > 0.6) {
+        ctx.shadowColor = `rgba(139, 92, 246, ${(v - 0.6) * 0.8})`;
+        ctx.shadowBlur  = 8 * dpr;
         ctx.fill();
+        ctx.shadowBlur = 0;
       }
     }
 
     rafRef.current = requestAnimationFrame(draw);
-  }, [playing]);
+  }, []); // no deps — uses only refs
 
-  // Start / stop RAF
   useEffect(() => {
     rafRef.current = requestAnimationFrame(draw);
     return () => cancelAnimationFrame(rafRef.current);
   }, [draw]);
 
-  // ── Audio events ─────────────────────────────────────────────────────────────
+  // ── Audio events ──────────────────────────────────────────────────────────
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
-
-    const onTimeUpdate = () => {
+    const onTime   = () => {
       setCurrent(audio.currentTime);
       setProgress(audio.duration ? audio.currentTime / audio.duration : 0);
     };
-    const onLoaded  = () => setDuration(audio.duration);
-    const onEnded   = () => { setPlaying(false); setProgress(0); audio.currentTime = 0; };
-
-    audio.addEventListener('timeupdate', onTimeUpdate);
-    audio.addEventListener('loadedmetadata', onLoaded);
-    audio.addEventListener('ended', onEnded);
+    const onMeta   = () => setDuration(audio.duration);
+    const onEnded  = () => {
+      playingRef.current = false;
+      setPlaying(false);
+      setProgress(0);
+      audio.currentTime = 0;
+    };
+    audio.addEventListener('timeupdate',    onTime);
+    audio.addEventListener('loadedmetadata', onMeta);
+    audio.addEventListener('ended',         onEnded);
     return () => {
-      audio.removeEventListener('timeupdate', onTimeUpdate);
-      audio.removeEventListener('loadedmetadata', onLoaded);
-      audio.removeEventListener('ended', onEnded);
+      audio.removeEventListener('timeupdate',    onTime);
+      audio.removeEventListener('loadedmetadata', onMeta);
+      audio.removeEventListener('ended',         onEnded);
     };
   }, []);
 
-  // Reset when src changes
   useEffect(() => {
+    playingRef.current = false;
     setPlaying(false);
     setProgress(0);
     setCurrent(0);
   }, [src]);
 
-  // ── Controls ─────────────────────────────────────────────────────────────────
+  // ── Controls ──────────────────────────────────────────────────────────────
   const togglePlay = async () => {
     const audio = audioRef.current;
     if (!audio) return;
     ensureAudioGraph();
     if (ctxRef.current?.state === 'suspended') await ctxRef.current.resume();
-
     if (playing) {
       audio.pause();
+      playingRef.current = false;
       setPlaying(false);
     } else {
       await audio.play();
+      playingRef.current = true;
       setPlaying(true);
     }
   };
 
   const seek = (e: React.MouseEvent<HTMLDivElement>) => {
     const audio = audioRef.current;
-    if (!audio || !audio.duration) return;
+    if (!audio?.duration) return;
     const rect = e.currentTarget.getBoundingClientRect();
-    const pct  = (e.clientX - rect.left) / rect.width;
-    audio.currentTime = pct * audio.duration;
+    audio.currentTime = ((e.clientX - rect.left) / rect.width) * audio.duration;
   };
 
-  const fmt = (s: number) => {
-    const m = Math.floor(s / 60);
-    const sec = Math.floor(s % 60);
-    return `${m}:${sec.toString().padStart(2, '0')}`;
-  };
+  const fmt = (s: number) =>
+    `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 
   return (
     <div style={s.wrap}>
       <audio ref={audioRef} src={src} preload="metadata" />
 
-      {/* ── Waveform canvas ── */}
-      <canvas
-        ref={canvasRef}
-        width={372}
-        height={64}
-        style={s.canvas}
-      />
+      {/* Waveform */}
+      <canvas ref={canvasRef} style={s.canvas} />
 
-      {/* ── Seek bar ── */}
+      {/* Seek bar */}
       <div style={s.seekTrack} onClick={seek}>
         <div style={{ ...s.seekFill, width: `${progress * 100}%` }} />
         <div style={{ ...s.seekThumb, left: `calc(${progress * 100}% - 5px)` }} />
       </div>
 
-      {/* ── Time ── */}
+      {/* Time */}
       <div style={s.times}>
         <span>{fmt(current)}</span>
         <span style={{ color: 'var(--faint)' }}>{duration ? fmt(duration) : '--:--'}</span>
       </div>
 
-      {/* ── Buttons ── */}
+      {/* Controls */}
       <div style={s.controls}>
-        <button style={s.playBtn} onClick={togglePlay}>
+        <button style={{ ...s.playBtn, ...(playing ? s.playBtnActive : {}) }} onClick={togglePlay}>
           {playing ? '⏸' : '▶'}
         </button>
         <button style={s.dlBtn} onClick={onDownload}>
@@ -199,6 +219,8 @@ export default function WavePlayer({ src, filename, onDownload }: Props) {
     </div>
   );
 }
+
+const PURPLE = '#8b5cf6';
 
 const s: Record<string, React.CSSProperties> = {
   wrap: {
@@ -212,7 +234,7 @@ const s: Record<string, React.CSSProperties> = {
   },
   canvas: {
     width: '100%',
-    height: 64,
+    height: 80,
     borderRadius: 6,
   },
   seekTrack: {
@@ -229,6 +251,7 @@ const s: Record<string, React.CSSProperties> = {
     background: PURPLE,
     borderRadius: 999,
     pointerEvents: 'none',
+    transition: 'width 0.1s linear',
   },
   seekThumb: {
     position: 'absolute',
@@ -239,6 +262,7 @@ const s: Record<string, React.CSSProperties> = {
     background: PURPLE,
     pointerEvents: 'none',
     boxShadow: '0 0 6px rgba(139,92,246,0.6)',
+    transition: 'left 0.1s linear',
   },
   times: {
     display: 'flex',
@@ -264,6 +288,12 @@ const s: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     justifyContent: 'center',
     flexShrink: 0,
+    transition: 'all 0.15s',
+  },
+  playBtnActive: {
+    background: 'var(--purple-dk)',
+    borderColor: PURPLE,
+    boxShadow: `0 0 10px rgba(139,92,246,0.3)`,
   },
   dlBtn: {
     flex: 1,
