@@ -8,31 +8,31 @@ export const runtime     = 'nodejs';
 export const maxDuration = 180;
 
 // ── Audio filter builder ──────────────────────────────────────────────────────
-
-function buildAtempo(speed: number): string[] {
-  if (Math.abs(speed - 1.0) < 0.001) return [];
-  const filters: string[] = [];
-  let r = speed;
-  while (r < 0.5) { filters.push('atempo=0.5'); r = r / 0.5; }
-  while (r > 2.0) { filters.push('atempo=2.0'); r = r / 2.0; }
-  if (Math.abs(r - 1.0) > 0.001) filters.push(`atempo=${r.toFixed(6)}`);
-  return filters;
-}
+//
+// Speed is done via asetrate (not atempo).
+// asetrate lowers/raises the sample rate so audio slows AND pitch drops together —
+// exactly the smooth, natural "slowed+reverb" vinyl sound.
+// atempo time-stretches while preserving pitch, which sounds choppy/robotic.
 
 function buildFilters(speed: number, reverb: number, pitch: number, bassBoost: number): string {
   const f: string[] = [];
-  f.push(...buildAtempo(speed));
-  if (Math.abs(pitch) >= 0.5) {
-    const factor = Math.pow(2, pitch / 12);
-    f.push(`asetrate=${Math.round(44100 * factor)}`);
-    f.push(...buildAtempo(1 / factor));
+
+  // Combine speed + pitch into one asetrate call
+  // e.g. speed=0.85, pitch=0 → asetrate=37485 → aresample=44100
+  const pitchFactor = Math.pow(2, pitch / 12);
+  const newRate     = Math.round(44100 * speed * pitchFactor);
+  if (newRate !== 44100) {
+    f.push(`asetrate=${newRate}`);
     f.push('aresample=44100');
   }
+
   if (bassBoost > 0) f.push(`equalizer=f=80:width_type=o:width=2:g=${bassBoost}`);
-  if (reverb   > 0) {
+
+  if (reverb > 0) {
     const m = reverb / 100;
     f.push(`aecho=0.8:0.9:50|100|200|400:${(m*.50).toFixed(3)}|${(m*.38).toFixed(3)}|${(m*.27).toFixed(3)}|${(m*.18).toFixed(3)}`);
   }
+
   return f.length > 0 ? f.join(',') : 'anull';
 }
 
