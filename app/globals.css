@@ -11,9 +11,9 @@
   --text:      #ffffff;
   --muted:     #9b92c8;
   --faint:     #3d3558;
-  --purple:    #8b5cf6;
-  --purple-hi: #a78bfa;
-  --purple-dk: #6d28d9;
+  --purple:    #b06bff;
+  --purple-hi: #cc8dff;
+  --purple-dk: #8b21e8;
   --green:     #10b981;
   --red:       #f87171;
 }
@@ -62,7 +62,7 @@ input[type="range"]::-webkit-slider-thumb {
   height: 14px;
   border-radius: 50%;
   background: var(--purple);
-  box-shadow: 0 0 8px rgba(139, 92, 246, 0.5);
+  box-shadow: 0 0 8px rgba(176, 107, 255, 0.55);
   transition: transform 0.1s;
 }
 input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.2); }
@@ -72,5 +72,5 @@ input[type="range"]::-moz-range-thumb {
   border: none;
   border-radius: 50%;
   background: var(--purple);
-  box-shadow: 0 0 8px rgba(139, 92, 246, 0.5);
+  box-shadow: 0 0 8px rgba(176, 107, 255, 0.55);
 }

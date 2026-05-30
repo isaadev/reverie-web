@@ -114,7 +114,7 @@ export default function WavePlayer({ src, filename: _filename, onDownload }: Pro
 
       // Glow on loud bars when playing
       if (isLive && v > 0.6) {
-        ctx.shadowColor = `rgba(139, 92, 246, ${(v - 0.6) * 0.8})`;
+        ctx.shadowColor = `rgba(176, 107, 255, ${(v - 0.6) * 0.8})`;
         ctx.shadowBlur  = 8 * dpr;
         ctx.fill();
         ctx.shadowBlur = 0;
@@ -220,7 +220,7 @@ export default function WavePlayer({ src, filename: _filename, onDownload }: Pro
   );
 }
 
-const PURPLE = '#8b5cf6';
+const PURPLE = '#b06bff';
 
 const s: Record<string, React.CSSProperties> = {
   wrap: {
@@ -299,8 +299,8 @@ const s: Record<string, React.CSSProperties> = {
     flex: 1,
     height: 36,
     borderRadius: 8,
-    background: 'linear-gradient(135deg, #6d28d9, #7c3aed)',
-    border: '1px solid #8b5cf6',
+    background: 'linear-gradient(135deg, #8b21e8, #9d35f5)',
+    border: '1px solid #b06bff',
     color: '#fff',
     fontSize: 12,
     fontWeight: 500,

@@ -466,10 +466,10 @@ const styles: Record<string, React.CSSProperties> = {
     whiteSpace: 'nowrap' as const,
   },
   presetActive: {
-    background: 'linear-gradient(135deg, #6d28d9, #7c3aed)',
-    borderColor: '#8b5cf6',
+    background: 'linear-gradient(135deg, #8b21e8, #9d35f5)',
+    borderColor: '#b06bff',
     color: '#fff',
-    boxShadow: '0 0 12px rgba(124, 58, 237, 0.35)',
+    boxShadow: '0 0 12px rgba(157, 53, 245, 0.35)',
   },
   sliders: {
     display: 'flex',
@@ -498,8 +498,8 @@ const styles: Record<string, React.CSSProperties> = {
   dlBtn: {
     width: '100%',
     padding: '13px',
-    background: 'linear-gradient(135deg, #6d28d9, #7c3aed)',
-    border: '1px solid #8b5cf6',
+    background: 'linear-gradient(135deg, #8b21e8, #9d35f5)',
+    border: '1px solid #b06bff',
     borderRadius: 10,
     color: '#fff',
     fontSize: 13,
@@ -507,7 +507,7 @@ const styles: Record<string, React.CSSProperties> = {
     letterSpacing: 1,
     cursor: 'pointer',
     transition: 'all 0.2s',
-    boxShadow: '0 0 20px rgba(109, 40, 217, 0.3)',
+    boxShadow: '0 0 20px rgba(139, 33, 232, 0.3)',
   },
   dlBtnLoading: {
     opacity: 0.6,
