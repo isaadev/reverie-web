@@ -237,15 +237,13 @@ export default function ReverieApp() {
             onClick={process}
             disabled={isProcessing}
           >
-            {isProcessing ? 'processing...' : '▶  load & preview'}
+            {isProcessing
+              ? <span style={styles.processingInner}>
+                  <span style={styles.spinner} />
+                  processing...
+                </span>
+              : '▶  load & preview'}
           </button>
-        )}
-
-        {/* ── Processing note ── */}
-        {isProcessing && (
-          <p style={styles.processingNote}>
-            downloading & processing — this takes 15–30s
-          </p>
         )}
 
         {/* ── Player ── */}
@@ -527,6 +525,22 @@ const styles: Record<string, React.CSSProperties> = {
     color: 'var(--muted)',
     boxShadow: 'none',
     fontSize: 11,
+  },
+  processingInner: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+  },
+  spinner: {
+    display: 'inline-block',
+    width: 14,
+    height: 14,
+    borderRadius: '50%',
+    border: '2px solid rgba(255,255,255,0.25)',
+    borderTopColor: '#fff',
+    animation: 'spin 0.7s linear infinite',
+    flexShrink: 0,
   },
   processingNote: {
     fontSize: 10,
