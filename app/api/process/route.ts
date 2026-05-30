@@ -23,7 +23,7 @@ function buildFilters(speed: number, reverb: number, pitch: number, bassBoost: n
   const f: string[] = [];
   f.push(...buildAtempo(speed));
   if (Math.abs(pitch) >= 0.5) {
-    const factor  = Math.pow(2, pitch / 12);
+    const factor = Math.pow(2, pitch / 12);
     f.push(`asetrate=${Math.round(44100 * factor)}`);
     f.push(...buildAtempo(1 / factor));
     f.push('aresample=44100');
@@ -36,48 +36,22 @@ function buildFilters(speed: number, reverb: number, pitch: number, bassBoost: n
   return f.length > 0 ? f.join(',') : 'anull';
 }
 
-// ── Cobalt ────────────────────────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
-async function cobaltAudioUrl(trackUrl: string): Promise<string> {
-  const res = await fetch('https://api.cobalt.tools/', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Accept':       'application/json',
-      'User-Agent':   'reverie/1.0',
-    },
-    body: JSON.stringify({ url: trackUrl, downloadMode: 'audio' }),
-  });
-
-  const data = await res.json() as {
-    status: string;
-    url?: string;
-    error?: { code?: string };
-  };
-
-  if (!res.ok || data.status === 'error') {
-    const code = data.error?.code ?? 'unknown';
-    throw new Error(`Cobalt error: ${code}`);
-  }
-
-  if (!data.url) throw new Error('Cobalt returned no audio URL');
-  return data.url;
-}
-
-// ── ffmpeg ────────────────────────────────────────────────────────────────────
-
-function runFfmpeg(args: string[]): Promise<void> {
+function run(cmd: string, args: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
-    const proc = spawn('ffmpeg', args);
+    const proc = spawn(cmd, args);
     const errChunks: Buffer[] = [];
     proc.stderr.on('data', (d: Buffer) => errChunks.push(d));
     proc.on('close', code => {
       if (code !== 0) {
-        const msg = Buffer.concat(errChunks).toString().trim().split('\n').slice(-3).join(' ');
-        reject(new Error(`ffmpeg failed: ${msg}`));
+        const raw = Buffer.concat(errChunks).toString().trim();
+        const msg = raw.split('\n').filter(l => l.startsWith('ERROR')).pop()
+          ?? raw.split('\n').slice(-3).join(' ');
+        reject(new Error(msg || `${cmd} failed`));
       } else resolve();
     });
-    proc.on('error', err => reject(new Error(`ffmpeg not found: ${err.message}`)));
+    proc.on('error', err => reject(new Error(`${cmd} not found: ${err.message}`)));
   });
 }
 
@@ -98,39 +72,43 @@ export async function POST(req: NextRequest) {
 
   if (!url) return NextResponse.json({ error: 'Missing url' }, { status: 400 });
 
+  if (!/soundcloud\.com/i.test(url)) {
+    return NextResponse.json({ error: 'Only SoundCloud links are supported.' }, { status: 400 });
+  }
+
   const tmpDir     = fs.mkdtempSync(path.join(os.tmpdir(), 'rev-'));
   const outputPath = path.join(tmpDir, 'output.mp3');
 
   try {
-    // 1. Get audio stream URL from cobalt
-    const audioUrl = await cobaltAudioUrl(url);
-
-    // 2. ffmpeg: stream from cobalt URL → apply effects → mp3
-    const afFilter = buildFilters(
-      parseFloat(String(speed)),
-      parseFloat(String(reverb)),
-      parseFloat(String(pitch)),
-      parseFloat(String(bassBoost)),
-    );
-
-    await runFfmpeg([
-      '-i',        audioUrl,
-      '-af',       afFilter,
-      '-codec:a',  'libmp3lame',
-      '-q:a',      '2',
-      '-y',
-      outputPath,
+    // 1. Download with yt-dlp (works great for SoundCloud, no auth needed)
+    await run('yt-dlp', [
+      '-x',
+      '--audio-format', 'wav',
+      '--audio-quality', '0',
+      '--no-playlist',
+      '-o', path.join(tmpDir, 'input.%(ext)s'),
+      url,
     ]);
 
-    // 3. Return processed MP3
-    const mp3      = fs.readFileSync(outputPath);
-    const filename = `${sanitize(title)}.mp3`;
+    const inputFile = fs.readdirSync(tmpDir).find(f => f.startsWith('input.'));
+    if (!inputFile) throw new Error('Download produced no file');
 
+    // 2. Process with ffmpeg
+    await run('ffmpeg', [
+      '-i',       path.join(tmpDir, inputFile),
+      '-af',      buildFilters(+speed, +reverb, +pitch, +bassBoost),
+      '-codec:a', 'libmp3lame',
+      '-q:a',     '2',
+      '-y',       outputPath,
+    ]);
+
+    // 3. Return MP3
+    const mp3 = fs.readFileSync(outputPath);
     return new NextResponse(mp3, {
       status: 200,
       headers: {
         'Content-Type':        'audio/mpeg',
-        'Content-Disposition': `attachment; filename="${filename}"`,
+        'Content-Disposition': `attachment; filename="${sanitize(title)}.mp3"`,
         'Content-Length':      String(mp3.length),
       },
     });

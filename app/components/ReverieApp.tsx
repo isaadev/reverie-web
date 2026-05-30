@@ -157,7 +157,7 @@ export default function ReverieApp() {
           <input
             style={{ ...styles.input, ...(idle ? styles.inputIdle : {}) }}
             type="text"
-            placeholder="paste a soundcloud or youtube link..."
+            placeholder="paste a soundcloud.com link..."
             value={url}
             onChange={e => setUrl(e.target.value)}
             onKeyDown={e => e.key === 'Enter' && loadInfo(url)}
