@@ -8,19 +8,11 @@ export const runtime     = 'nodejs';
 export const maxDuration = 180;
 
 // ── Audio filter builder ──────────────────────────────────────────────────────
-//
-// Speed is done via asetrate (not atempo).
-// asetrate lowers/raises the sample rate so audio slows AND pitch drops together —
-// exactly the smooth, natural "slowed+reverb" vinyl sound.
-// atempo time-stretches while preserving pitch, which sounds choppy/robotic.
 
 function buildFilters(speed: number, reverb: number, pitch: number, bassBoost: number): string {
   const f: string[] = [];
 
-  // Combine speed + pitch into one asetrate call
-  // e.g. speed=0.85, pitch=0 → asetrate=37485 → aresample=44100
-  const pitchFactor = Math.pow(2, pitch / 12);
-  const newRate     = Math.round(44100 * speed * pitchFactor);
+  const newRate = Math.round(44100 * speed * Math.pow(2, pitch / 12));
   if (newRate !== 44100) {
     f.push(`asetrate=${newRate}`);
     f.push('aresample=44100');
@@ -33,30 +25,72 @@ function buildFilters(speed: number, reverb: number, pitch: number, bassBoost: n
     f.push(`aecho=0.8:0.9:50|100|200|400:${(m*.50).toFixed(3)}|${(m*.38).toFixed(3)}|${(m*.27).toFixed(3)}|${(m*.18).toFixed(3)}`);
   }
 
-  return f.length > 0 ? f.join(',') : 'anull';
-}
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-function run(cmd: string, args: string[]): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const proc = spawn(cmd, args);
-    const errChunks: Buffer[] = [];
-    proc.stderr.on('data', (d: Buffer) => errChunks.push(d));
-    proc.on('close', code => {
-      if (code !== 0) {
-        const raw = Buffer.concat(errChunks).toString().trim();
-        const msg = raw.split('\n').filter(l => l.startsWith('ERROR')).pop()
-          ?? raw.split('\n').slice(-3).join(' ');
-        reject(new Error(msg || `${cmd} failed`));
-      } else resolve();
-    });
-    proc.on('error', err => reject(new Error(`${cmd} not found: ${err.message}`)));
-  });
+  return f.join(',') || 'anull';
 }
 
 function sanitize(name: string): string {
   return name.replace(/[^\w\s\-().]/g, '').trim().slice(0, 80) || 'reverie';
+}
+
+// ── yt-dlp → ffmpeg pipeline (runs in parallel) ───────────────────────────────
+// yt-dlp streams audio to stdout → ffmpeg reads from stdin → writes output.mp3
+// This is ~2x faster than download-then-process since both run simultaneously.
+
+function pipeline(url: string, afFilter: string, outputPath: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let done = false;
+    const fail = (msg: string) => { if (!done) { done = true; reject(new Error(msg)); } };
+
+    // yt-dlp: get best audio, write to stdout
+    const ytdlp = spawn('yt-dlp', [
+      '-f', 'bestaudio',
+      '--no-playlist',
+      '-o', '-',   // stdout
+      url,
+    ]);
+
+    // ffmpeg: read from stdin, apply filters, encode mp3
+    const ffArgs = [
+      '-i', 'pipe:0',
+      '-vn',                        // no video
+      ...(afFilter !== 'anull' ? ['-af', afFilter] : []),
+      '-codec:a', 'libmp3lame',
+      '-q:a', '2',
+      '-threads', '0',              // use all cores
+      '-y', outputPath,
+    ];
+    const ff = spawn('ffmpeg', ffArgs);
+
+    // Pipe yt-dlp → ffmpeg
+    ytdlp.stdout.pipe(ff.stdin);
+
+    const ytErr: Buffer[] = [];
+    const ffErr: Buffer[] = [];
+    ytdlp.stderr.on('data', (d: Buffer) => ytErr.push(d));
+    ff.stderr.on('data',    (d: Buffer) => ffErr.push(d));
+
+    ytdlp.on('close', code => {
+      if (code !== 0) {
+        ff.stdin.destroy();
+        const raw = Buffer.concat(ytErr).toString().trim();
+        const msg = raw.split('\n').filter(l => l.startsWith('ERROR')).pop()
+          ?? raw.split('\n').slice(-3).join(' ');
+        fail(msg || 'yt-dlp failed');
+      }
+    });
+
+    ff.on('close', code => {
+      if (code !== 0) {
+        const msg = Buffer.concat(ffErr).toString().trim().split('\n').slice(-3).join(' ');
+        fail(`ffmpeg failed: ${msg}`);
+      } else {
+        if (!done) { done = true; resolve(); }
+      }
+    });
+
+    ytdlp.on('error', err => fail(`yt-dlp: ${err.message}`));
+    ff.on('error',    err => fail(`ffmpeg: ${err.message}`));
+  });
 }
 
 // ── Route ─────────────────────────────────────────────────────────────────────
@@ -80,29 +114,9 @@ export async function POST(req: NextRequest) {
   const outputPath = path.join(tmpDir, 'output.mp3');
 
   try {
-    // 1. Download with yt-dlp (works great for SoundCloud, no auth needed)
-    await run('yt-dlp', [
-      '-x',
-      '--audio-format', 'wav',
-      '--audio-quality', '0',
-      '--no-playlist',
-      '-o', path.join(tmpDir, 'input.%(ext)s'),
-      url,
-    ]);
+    const afFilter = buildFilters(+speed, +reverb, +pitch, +bassBoost);
+    await pipeline(url, afFilter, outputPath);
 
-    const inputFile = fs.readdirSync(tmpDir).find(f => f.startsWith('input.'));
-    if (!inputFile) throw new Error('Download produced no file');
-
-    // 2. Process with ffmpeg
-    await run('ffmpeg', [
-      '-i',       path.join(tmpDir, inputFile),
-      '-af',      buildFilters(+speed, +reverb, +pitch, +bassBoost),
-      '-codec:a', 'libmp3lame',
-      '-q:a',     '2',
-      '-y',       outputPath,
-    ]);
-
-    // 3. Return MP3
     const mp3 = fs.readFileSync(outputPath);
     return new NextResponse(mp3, {
       status: 200,
