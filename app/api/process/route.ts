@@ -1,8 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { spawn }                     from 'child_process';
-import * as fs                       from 'fs';
-import * as path                     from 'path';
-import * as os                       from 'os';
 
 export const runtime     = 'nodejs';
 export const maxDuration = 180;
@@ -32,64 +29,48 @@ function sanitize(name: string): string {
   return name.replace(/[^\w\s\-().]/g, '').trim().slice(0, 80) || 'reverie';
 }
 
-// ── yt-dlp → ffmpeg pipeline (runs in parallel) ───────────────────────────────
-// yt-dlp streams audio to stdout → ffmpeg reads from stdin → writes output.mp3
-// This is ~2x faster than download-then-process since both run simultaneously.
+// ── Streaming pipeline ────────────────────────────────────────────────────────
+// yt-dlp stdout → ffmpeg stdin → ffmpeg stdout → HTTP response
+// All three run concurrently — the browser starts receiving audio
+// while yt-dlp is still downloading and ffmpeg is still encoding.
 
-function pipeline(url: string, afFilter: string, outputPath: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    let done = false;
-    const fail = (msg: string) => { if (!done) { done = true; reject(new Error(msg)); } };
+function createStream(url: string, afFilter: string): ReadableStream<Uint8Array> {
+  const ytdlp = spawn('yt-dlp', [
+    '-f', 'bestaudio',
+    '--no-playlist',
+    '-o', '-',
+    url,
+  ]);
 
-    // yt-dlp: get best audio, write to stdout
-    const ytdlp = spawn('yt-dlp', [
-      '-f', 'bestaudio',
-      '--no-playlist',
-      '-o', '-',   // stdout
-      url,
-    ]);
+  const ff = spawn('ffmpeg', [
+    '-i', 'pipe:0',
+    '-vn',
+    ...(afFilter !== 'anull' ? ['-af', afFilter] : []),
+    '-codec:a', 'libmp3lame',
+    '-q:a', '2',
+    '-threads', '0',
+    '-f', 'mp3',   // explicit format for stdout output
+    'pipe:1',
+  ]);
 
-    // ffmpeg: read from stdin, apply filters, encode mp3
-    const ffArgs = [
-      '-i', 'pipe:0',
-      '-vn',                        // no video
-      ...(afFilter !== 'anull' ? ['-af', afFilter] : []),
-      '-codec:a', 'libmp3lame',
-      '-q:a', '2',
-      '-threads', '0',              // use all cores
-      '-y', outputPath,
-    ];
-    const ff = spawn('ffmpeg', ffArgs);
+  // yt-dlp → ffmpeg
+  ytdlp.stdout.pipe(ff.stdin);
+  ytdlp.on('close', code => { if (code !== 0) ff.stdin.destroy(); });
 
-    // Pipe yt-dlp → ffmpeg
-    ytdlp.stdout.pipe(ff.stdin);
-
-    const ytErr: Buffer[] = [];
-    const ffErr: Buffer[] = [];
-    ytdlp.stderr.on('data', (d: Buffer) => ytErr.push(d));
-    ff.stderr.on('data',    (d: Buffer) => ffErr.push(d));
-
-    ytdlp.on('close', code => {
-      if (code !== 0) {
-        ff.stdin.destroy();
-        const raw = Buffer.concat(ytErr).toString().trim();
-        const msg = raw.split('\n').filter(l => l.startsWith('ERROR')).pop()
-          ?? raw.split('\n').slice(-3).join(' ');
-        fail(msg || 'yt-dlp failed');
-      }
-    });
-
-    ff.on('close', code => {
-      if (code !== 0) {
-        const msg = Buffer.concat(ffErr).toString().trim().split('\n').slice(-3).join(' ');
-        fail(`ffmpeg failed: ${msg}`);
-      } else {
-        if (!done) { done = true; resolve(); }
-      }
-    });
-
-    ytdlp.on('error', err => fail(`yt-dlp: ${err.message}`));
-    ff.on('error',    err => fail(`ffmpeg: ${err.message}`));
+  // Wrap ffmpeg stdout in a Web ReadableStream
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      ff.stdout.on('data',  (chunk: Buffer) => controller.enqueue(new Uint8Array(chunk)));
+      ff.stdout.on('end',   ()              => controller.close());
+      ff.stdout.on('error', (err: Error)    => controller.error(err));
+      ff.on('close', code => {
+        if (code !== 0) controller.error(new Error(`ffmpeg exited ${code}`));
+      });
+    },
+    cancel() {
+      ytdlp.kill();
+      ff.kill();
+    },
   });
 }
 
@@ -110,26 +91,16 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Only SoundCloud links are supported.' }, { status: 400 });
   }
 
-  const tmpDir     = fs.mkdtempSync(path.join(os.tmpdir(), 'rev-'));
-  const outputPath = path.join(tmpDir, 'output.mp3');
+  const afFilter = buildFilters(+speed, +reverb, +pitch, +bassBoost);
+  const stream   = createStream(url, afFilter);
 
-  try {
-    const afFilter = buildFilters(+speed, +reverb, +pitch, +bassBoost);
-    await pipeline(url, afFilter, outputPath);
-
-    const mp3 = fs.readFileSync(outputPath);
-    return new NextResponse(mp3, {
-      status: 200,
-      headers: {
-        'Content-Type':        'audio/mpeg',
-        'Content-Disposition': `attachment; filename="${sanitize(title)}.mp3"`,
-        'Content-Length':      String(mp3.length),
-      },
-    });
-  } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : 'Unknown error';
-    return NextResponse.json({ error: msg }, { status: 500 });
-  } finally {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-  }
+  return new NextResponse(stream, {
+    status: 200,
+    headers: {
+      'Content-Type':        'audio/mpeg',
+      'Content-Disposition': `attachment; filename="${sanitize(title)}.mp3"`,
+      'Transfer-Encoding':   'chunked',
+      'X-Content-Type-Options': 'nosniff',
+    },
+  });
 }
