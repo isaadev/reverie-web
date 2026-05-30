@@ -5,77 +5,79 @@ import * as path                     from 'path';
 import * as os                       from 'os';
 
 export const runtime     = 'nodejs';
-export const maxDuration = 180; // Railway hobby allows up to 300s
+export const maxDuration = 180;
 
 // ── Audio filter builder ──────────────────────────────────────────────────────
 
-/** Build a chain of atempo filters for speeds outside the 0.5–2.0 range */
 function buildAtempo(speed: number): string[] {
   if (Math.abs(speed - 1.0) < 0.001) return [];
   const filters: string[] = [];
-  let remaining = speed;
-  while (remaining < 0.5)  { filters.push('atempo=0.5'); remaining = remaining / 0.5; }
-  while (remaining > 2.0)  { filters.push('atempo=2.0'); remaining = remaining / 2.0; }
-  if (Math.abs(remaining - 1.0) > 0.001) filters.push(`atempo=${remaining.toFixed(6)}`);
+  let r = speed;
+  while (r < 0.5) { filters.push('atempo=0.5'); r = r / 0.5; }
+  while (r > 2.0) { filters.push('atempo=2.0'); r = r / 2.0; }
+  if (Math.abs(r - 1.0) > 0.001) filters.push(`atempo=${r.toFixed(6)}`);
   return filters;
 }
 
 function buildFilters(speed: number, reverb: number, pitch: number, bassBoost: number): string {
-  const filters: string[] = [];
-
-  // 1. Speed via atempo (preserves pitch)
-  filters.push(...buildAtempo(speed));
-
-  // 2. Pitch shift independent of speed:
-  //    asetrate shifts pitch+speed together → atempo correction brings speed back
+  const f: string[] = [];
+  f.push(...buildAtempo(speed));
   if (Math.abs(pitch) >= 0.5) {
-    const SR          = 44100;
-    const pitchFactor = Math.pow(2, pitch / 12);
-    const newRate     = Math.round(SR * pitchFactor);
-    filters.push(`asetrate=${newRate}`);
-    // Correct speed: if we sped up via asetrate, slow back down (and vice-versa)
-    filters.push(...buildAtempo(1 / pitchFactor));
-    // Resample back to 44100 so downstream filters work correctly
-    filters.push('aresample=44100');
+    const factor  = Math.pow(2, pitch / 12);
+    f.push(`asetrate=${Math.round(44100 * factor)}`);
+    f.push(...buildAtempo(1 / factor));
+    f.push('aresample=44100');
   }
-
-  // 3. Bass boost
-  if (bassBoost > 0) {
-    filters.push(`equalizer=f=80:width_type=o:width=2:g=${bassBoost}`);
+  if (bassBoost > 0) f.push(`equalizer=f=80:width_type=o:width=2:g=${bassBoost}`);
+  if (reverb   > 0) {
+    const m = reverb / 100;
+    f.push(`aecho=0.8:0.9:50|100|200|400:${(m*.50).toFixed(3)}|${(m*.38).toFixed(3)}|${(m*.27).toFixed(3)}|${(m*.18).toFixed(3)}`);
   }
-
-  // 4. Reverb via aecho (multi-tap, scaled by reverb%)
-  if (reverb > 0) {
-    const mix = reverb / 100;
-    const d1  = (mix * 0.50).toFixed(3);
-    const d2  = (mix * 0.38).toFixed(3);
-    const d3  = (mix * 0.27).toFixed(3);
-    const d4  = (mix * 0.18).toFixed(3);
-    filters.push(`aecho=0.8:0.9:50|100|200|400:${d1}|${d2}|${d3}|${d4}`);
-  }
-
-  return filters.length > 0 ? filters.join(',') : 'anull';
+  return f.length > 0 ? f.join(',') : 'anull';
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// ── Cobalt ────────────────────────────────────────────────────────────────────
 
-function run(cmd: string, args: string[]): Promise<void> {
+async function cobaltAudioUrl(trackUrl: string): Promise<string> {
+  const res = await fetch('https://api.cobalt.tools/', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Accept':       'application/json',
+      'User-Agent':   'reverie/1.0',
+    },
+    body: JSON.stringify({ url: trackUrl, downloadMode: 'audio' }),
+  });
+
+  const data = await res.json() as {
+    status: string;
+    url?: string;
+    error?: { code?: string };
+  };
+
+  if (!res.ok || data.status === 'error') {
+    const code = data.error?.code ?? 'unknown';
+    throw new Error(`Cobalt error: ${code}`);
+  }
+
+  if (!data.url) throw new Error('Cobalt returned no audio URL');
+  return data.url;
+}
+
+// ── ffmpeg ────────────────────────────────────────────────────────────────────
+
+function runFfmpeg(args: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
-    const proc = spawn(cmd, args);
+    const proc = spawn('ffmpeg', args);
     const errChunks: Buffer[] = [];
     proc.stderr.on('data', (d: Buffer) => errChunks.push(d));
     proc.on('close', code => {
       if (code !== 0) {
-        const raw = Buffer.concat(errChunks).toString().trim();
-        const msg = raw.includes('Sign in') || raw.includes('429')
-          ? 'YouTube is rate-limiting this server. Try a SoundCloud link, or try again in a few minutes.'
-          : raw.split('\n').filter(l => l.startsWith('ERROR')).pop() ?? raw.split('\n').slice(-3).join(' ');
-        reject(new Error(msg || `${cmd} failed`));
-      } else {
-        resolve();
-      }
+        const msg = Buffer.concat(errChunks).toString().trim().split('\n').slice(-3).join(' ');
+        reject(new Error(`ffmpeg failed: ${msg}`));
+      } else resolve();
     });
-    proc.on('error', err => reject(new Error(`${cmd} not found: ${err.message}`)));
+    proc.on('error', err => reject(new Error(`ffmpeg not found: ${err.message}`)));
   });
 }
 
@@ -83,26 +85,12 @@ function sanitize(name: string): string {
   return name.replace(/[^\w\s\-().]/g, '').trim().slice(0, 80) || 'reverie';
 }
 
-/** Write cookies.txt from env var and return --cookies args, or [] if not set */
-function cookiesArgs(tmpDir: string): string[] {
-  const b64 = process.env.YOUTUBE_COOKIES;
-  if (!b64) return [];
-  const cookiesPath = path.join(tmpDir, 'cookies.txt');
-  fs.writeFileSync(cookiesPath, Buffer.from(b64, 'base64').toString('utf-8'));
-  return ['--cookies', cookiesPath];
-}
-
-// ── Route handler ─────────────────────────────────────────────────────────────
+// ── Route ─────────────────────────────────────────────────────────────────────
 
 export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => ({}));
   const {
-    url,
-    speed     = 1.0,
-    reverb    = 0,
-    pitch     = 0,
-    bassBoost = 0,
-    title     = 'reverie',
+    url, speed = 1.0, reverb = 0, pitch = 0, bassBoost = 0, title = 'reverie',
   } = body as {
     url: string; speed: number; reverb: number;
     pitch: number; bassBoost: number; title?: string;
@@ -110,28 +98,14 @@ export async function POST(req: NextRequest) {
 
   if (!url) return NextResponse.json({ error: 'Missing url' }, { status: 400 });
 
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rev-'));
+  const tmpDir     = fs.mkdtempSync(path.join(os.tmpdir(), 'rev-'));
+  const outputPath = path.join(tmpDir, 'output.mp3');
 
   try {
-    // ── 1. Download best audio with yt-dlp ──────────────────────────────────
-    await run('yt-dlp', [
-      '-x',
-      '--audio-format', 'wav',
-      '--audio-quality', '0',
-      '--no-playlist',
-      '--extractor-args', 'youtube:player_client=android,ios,web',
-      ...cookiesArgs(tmpDir),
-      '-o', path.join(tmpDir, 'input.%(ext)s'),
-      url,
-    ]);
+    // 1. Get audio stream URL from cobalt
+    const audioUrl = await cobaltAudioUrl(url);
 
-    const files      = fs.readdirSync(tmpDir);
-    const inputFile  = files.find(f => f.startsWith('input.'));
-    if (!inputFile) throw new Error('Download produced no file');
-    const inputPath  = path.join(tmpDir, inputFile);
-    const outputPath = path.join(tmpDir, 'output.mp3');
-
-    // ── 2. Process with ffmpeg ───────────────────────────────────────────────
+    // 2. ffmpeg: stream from cobalt URL → apply effects → mp3
     const afFilter = buildFilters(
       parseFloat(String(speed)),
       parseFloat(String(reverb)),
@@ -139,17 +113,17 @@ export async function POST(req: NextRequest) {
       parseFloat(String(bassBoost)),
     );
 
-    await run('ffmpeg', [
-      '-i', inputPath,
-      '-af', afFilter,
-      '-codec:a', 'libmp3lame',
-      '-q:a', '2',        // ~190 kbps VBR
+    await runFfmpeg([
+      '-i',        audioUrl,
+      '-af',       afFilter,
+      '-codec:a',  'libmp3lame',
+      '-q:a',      '2',
       '-y',
       outputPath,
     ]);
 
-    // ── 3. Stream back ───────────────────────────────────────────────────────
-    const mp3 = fs.readFileSync(outputPath);
+    // 3. Return processed MP3
+    const mp3      = fs.readFileSync(outputPath);
     const filename = `${sanitize(title)}.mp3`;
 
     return new NextResponse(mp3, {
