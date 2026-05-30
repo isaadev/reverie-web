@@ -1,8 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { spawn }                     from 'child_process';
+import * as fs                       from 'fs';
+import * as path                     from 'path';
+import * as os                       from 'os';
 
 export const runtime    = 'nodejs';
 export const maxDuration = 30;
+
+function cookiesArgs(): string[] {
+  const b64 = process.env.YOUTUBE_COOKIES;
+  if (!b64) return [];
+  const cookiesPath = path.join(os.tmpdir(), `yt-cookies-${Date.now()}.txt`);
+  fs.writeFileSync(cookiesPath, Buffer.from(b64, 'base64').toString('utf-8'));
+  return ['--cookies', cookiesPath];
+}
 
 function ytDlpJson(url: string): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
@@ -13,7 +24,7 @@ function ytDlpJson(url: string): Promise<Record<string, unknown>> {
       '--dump-json',
       '--no-playlist',
       '--extractor-args', 'youtube:player_client=android,ios,web',
-      '--js-runtimes', 'node',
+      ...cookiesArgs(),
       url,
     ]);
 

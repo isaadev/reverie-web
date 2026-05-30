@@ -83,6 +83,15 @@ function sanitize(name: string): string {
   return name.replace(/[^\w\s\-().]/g, '').trim().slice(0, 80) || 'reverie';
 }
 
+/** Write cookies.txt from env var and return --cookies args, or [] if not set */
+function cookiesArgs(tmpDir: string): string[] {
+  const b64 = process.env.YOUTUBE_COOKIES;
+  if (!b64) return [];
+  const cookiesPath = path.join(tmpDir, 'cookies.txt');
+  fs.writeFileSync(cookiesPath, Buffer.from(b64, 'base64').toString('utf-8'));
+  return ['--cookies', cookiesPath];
+}
+
 // ── Route handler ─────────────────────────────────────────────────────────────
 
 export async function POST(req: NextRequest) {
@@ -111,7 +120,7 @@ export async function POST(req: NextRequest) {
       '--audio-quality', '0',
       '--no-playlist',
       '--extractor-args', 'youtube:player_client=android,ios,web',
-      '--js-runtimes', 'node',
+      ...cookiesArgs(tmpDir),
       '-o', path.join(tmpDir, 'input.%(ext)s'),
       url,
     ]);
