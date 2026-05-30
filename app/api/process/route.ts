@@ -66,8 +66,11 @@ function run(cmd: string, args: string[]): Promise<void> {
     proc.stderr.on('data', (d: Buffer) => errChunks.push(d));
     proc.on('close', code => {
       if (code !== 0) {
-        const msg = Buffer.concat(errChunks).toString().trim().split('\n').slice(-3).join(' ');
-        reject(new Error(`${cmd} exited ${code}: ${msg}`));
+        const raw = Buffer.concat(errChunks).toString().trim();
+        const msg = raw.includes('Sign in') || raw.includes('429')
+          ? 'YouTube is rate-limiting this server. Try a SoundCloud link, or try again in a few minutes.'
+          : raw.split('\n').filter(l => l.startsWith('ERROR')).pop() ?? raw.split('\n').slice(-3).join(' ');
+        reject(new Error(msg || `${cmd} failed`));
       } else {
         resolve();
       }
@@ -107,6 +110,8 @@ export async function POST(req: NextRequest) {
       '--audio-format', 'wav',
       '--audio-quality', '0',
       '--no-playlist',
+      '--extractor-args', 'youtube:player_client=android,ios,web',
+      '--js-runtimes', 'node',
       '-o', path.join(tmpDir, 'input.%(ext)s'),
       url,
     ]);

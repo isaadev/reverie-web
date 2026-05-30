@@ -12,7 +12,8 @@ function ytDlpJson(url: string): Promise<Record<string, unknown>> {
     const proc = spawn('yt-dlp', [
       '--dump-json',
       '--no-playlist',
-      '--flat-playlist',
+      '--extractor-args', 'youtube:player_client=android,ios,web',
+      '--js-runtimes', 'node',
       url,
     ]);
 
@@ -21,7 +22,10 @@ function ytDlpJson(url: string): Promise<Record<string, unknown>> {
 
     proc.on('close', code => {
       if (code !== 0) {
-        const msg = Buffer.concat(errChunks).toString().trim();
+        const raw = Buffer.concat(errChunks).toString().trim();
+        const msg = raw.includes('Sign in') || raw.includes('429')
+          ? 'YouTube is rate-limiting this server. Try a SoundCloud link, or try again in a few minutes.'
+          : raw.split('\n').filter(l => l.startsWith('ERROR')).pop() ?? raw.slice(-300);
         return reject(new Error(msg || 'yt-dlp failed'));
       }
       try {
