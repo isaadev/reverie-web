@@ -237,14 +237,14 @@ export default function ReverieApp() {
             onClick={process}
             disabled={isProcessing}
           >
-            {isProcessing ? 'processing...' : '▶  load &amp; preview'}
+            {isProcessing ? 'processing...' : '▶  load & preview'}
           </button>
         )}
 
         {/* ── Processing note ── */}
         {isProcessing && (
           <p style={styles.processingNote}>
-            downloading &amp; processing — this takes 15–30s
+            downloading & processing — this takes 15–30s
           </p>
         )}
 
